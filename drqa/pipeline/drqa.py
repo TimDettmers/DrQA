@@ -6,6 +6,9 @@
 # LICENSE file in the root directory of this source tree.
 """Full DrQA pipeline."""
 
+import sys
+reload(sys)
+sys.setdefaultencoding("utf-8")
 import torch
 import regex
 import heapq
@@ -179,10 +182,18 @@ class DrQA(object):
     def process(self, query, candidates=None, top_n=1, n_docs=5,
                 return_context=False):
         """Run a single query."""
+        t0 = time.time()
+        predictions = self.process_batch(
+            [query]*128, [candidates] if candidates else None,
+            top_n, n_docs, return_context
+        )
+        print(time.time() - t0)
+        t0 = time.time()
         predictions = self.process_batch(
             [query], [candidates] if candidates else None,
             top_n, n_docs, return_context
         )
+        print(time.time() - t0)
         return predictions[0]
 
     def process_batch(self, queries, candidates=None, top_n=1, n_docs=5,
@@ -205,24 +216,31 @@ class DrQA(object):
         # We remove duplicates for processing efficiency.
         flat_docids = list({d for docids in all_docids for d in docids})
         did2didx = {did: didx for didx, did in enumerate(flat_docids)}
-        doc_texts = self.processes.map(fetch_text, flat_docids)
+        #doc_texts = self.processes.map(fetch_text, flat_docids)
+        doc_texts = list({d for docids in all_doc_scores for d in docids})
 
         # Split and flatten documents. Maintain a mapping from doc (index in
         # flat list) to split (index in flat list).
         flat_splits = []
         didx2sidx = []
         for text in doc_texts:
+            #splits = self._split_doc(unicode(text))
             splits = self._split_doc(text)
             didx2sidx.append([len(flat_splits), -1])
             for split in splits:
-                flat_splits.append(split)
+                #flat_splits.append(split)
+                flat_splits.append(unicode(split))
             didx2sidx[-1][1] = len(flat_splits)
 
+        print('tokenization...')
         # Push through the tokenizers as fast as possible.
+        #for q in queries: q_tokens.append(tokenize_text(q))
+        #for s in flat_splits: q_tokens.append(tokenize_text(s))
         q_tokens = self.processes.map_async(tokenize_text, queries)
         s_tokens = self.processes.map_async(tokenize_text, flat_splits)
         q_tokens = q_tokens.get()
         s_tokens = s_tokens.get()
+        print('tokenization end...')
 
         # Group into structured example inputs. Examples' ids represent
         # mappings to their question, document, and split ids.
@@ -258,17 +276,17 @@ class DrQA(object):
                         'cands': candidates[ex_id[0]] if candidates else None
                     })
                 handle = self.reader.predict(
-                    batch, batch_cands, async_pool=self.processes
+                    batch, batch_cands, async_pool=None#self.processes
                 )
             else:
-                handle = self.reader.predict(batch, async_pool=self.processes)
+                handle = self.reader.predict(batch, async_pool=None)#self.processes)
             result_handles.append((handle, batch[-1], batch[0].size(0)))
 
         # Iterate through the predictions, and maintain priority queues for
         # top scored answers for each question in the batch.
         queues = [[] for _ in range(len(queries))]
         for result, ex_ids, batch_size in result_handles:
-            s, e, score = result.get()
+            s, e, score = result#.get()
             for i in range(batch_size):
                 # We take the top prediction per split.
                 if len(score[i]) > 0:
@@ -288,7 +306,7 @@ class DrQA(object):
                 prediction = {
                     'doc_id': all_docids[qidx][rel_didx],
                     'span': s_tokens[sidx].slice(s, e + 1).untokenize(),
-                    'doc_score': float(all_doc_scores[qidx][rel_didx]),
+                    'doc_score': 0.0,#float(all_doc_scores[qidx][rel_didx]),
                     'span_score': float(score),
                 }
                 if return_context:

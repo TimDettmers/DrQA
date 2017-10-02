@@ -7,13 +7,15 @@
 
 import os
 from ..tokenizers import CoreNLPTokenizer
-from ..retriever import TfidfDocRanker
+from ..retriever import TfidfDocRanker, whoosh_ranker, xapian_ranker
 from ..retriever import DocDB
 from .. import DATA_DIR
 
 DEFAULTS = {
     'tokenizer': CoreNLPTokenizer,
-    'ranker': TfidfDocRanker,
+    #'ranker': TfidfDocRanker,
+    #'ranker': whoosh_ranker.WhooshRanker,
+    'ranker': xapian_ranker.XapianRanker,
     'db': DocDB,
     'reader_model': os.path.join(DATA_DIR, 'reader/multitask.mdl'),
 }

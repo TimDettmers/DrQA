@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-# Copyright 2017-present, Facebook, Inc.
-# All rights reserved.
-#
-# This source code is licensed under the license found in the
-# LICENSE file in the root directory of this source tree.
-"""Rank documents with TF-IDF scores"""
+"""Rank documents with TF-IDF via whoosh"""
 
 import logging
 import numpy as np
@@ -18,8 +13,54 @@ from . import utils
 from . import DEFAULTS
 from .. import tokenizers
 
+from whoosh.fields import Schema, ID, TEXT
+from whoosh.index import open_dir
+from whoosh.qparser import QueryParser
+
 logger = logging.getLogger(__name__)
 
+class WhooshRanker(object):
+    def __init__(self, tfidf_path, strict=True):
+        schema = Schema(docid=ID(stored=True), content=TEXT(stored=True))
+        self.ix = open_dir(tfidf_path)
+        self.searcher = self.ix.searcher()
+
+    def closest_docs(self, query, k=1):
+        """Closest docs by dot product between query and documents
+        in tfidf weighted word vector space.
+        """
+        # get highest scoring document for query
+        t0 =time.time()
+        print(query)
+        results = self.searcher.search(query, limit=k)
+        print(time.time() - t0)
+        print(k)
+        docs = []
+        for result in results:
+            docs.append((result['docid'], result['content']))
+        return docs
+
+    def batch_closest_docs(self, queries, k=1, num_workers=None):
+        """Process a batch of closest_docs requests multithreaded.
+        Note: we can use plain threads here as scipy is outside of the GIL.
+        """
+        # get highest scoring document for multiple queries
+        docs_batch = []
+        for i, q in enumerate(queries):
+            print(i, q)
+            docs_batch.append(self.closest_docs(self.parse(q), k))
+        return docs_batch
+
+    def parse(self, query):
+        """Parse the query text into a whoosh query"""
+        return QueryParser("content", self.ix.schema).parse(query)
+
+    def text2spvec(self, query): return None
+    def get_doc_index(self, doc_id): return 0
+    def get_doc_id(self, doc_index): return 0
+
+    def __exit__(self, *args):
+        self.searcher.close()
 
 class TfidfDocRanker(object):
     """Loads a pre-weighted inverted index of token/document terms.
@@ -74,11 +115,9 @@ class TfidfDocRanker(object):
         """Process a batch of closest_docs requests multithreaded.
         Note: we can use plain threads here as scipy is outside of the GIL.
         """
-        results = []
-        for i, q in enumerate(queries):
-            if i % 100 == 0:
-                print(i)
-            results.append(self.closest_docs(q, k))
+        with ThreadPool(num_workers) as threads:
+            closest_docs = partial(self.closest_docs, k=k)
+            results = threads.map(closest_docs, queries)
         return results
 
     def parse(self, query):

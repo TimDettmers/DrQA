@@ -92,6 +92,8 @@ DrQA = pipeline.DrQA(
     data_parallel=args.parallel,
     ranker_config={'options': {'tfidf_path': args.retriever_model,
                                'strict': False}},
+    #ranker_config={'options': {'index_path': args.retriever_model,
+                               #'strict': False}},
     db_config={'options': {'db_path': args.doc_db}},
     num_workers=args.num_workers,
 )

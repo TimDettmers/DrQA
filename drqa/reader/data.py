@@ -45,13 +45,13 @@ class Dictionary(object):
         if type(key) == int:
             return key in self.ind2tok
         elif type(key) == str:
-            return self.normalize(key) in self.tok2ind
+            return key in self.tok2ind
 
     def __getitem__(self, key):
         if type(key) == int:
             return self.ind2tok.get(key, self.UNK)
         if type(key) == str:
-            return self.tok2ind.get(self.normalize(key),
+            return self.tok2ind.get(key,
                                     self.tok2ind.get(self.UNK))
 
     def __setitem__(self, key, item):
