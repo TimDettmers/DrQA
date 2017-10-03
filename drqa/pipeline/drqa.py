@@ -173,7 +173,7 @@ class DrQA(object):
             dataset,
             batch_size=self.batch_size,
             sampler=sampler,
-            num_workers=num_loaders,
+            num_workers=int(num_loaders),
             collate_fn=batchify,
             pin_memory=self.cuda,
         )
@@ -184,16 +184,9 @@ class DrQA(object):
         """Run a single query."""
         t0 = time.time()
         predictions = self.process_batch(
-            [query]*128, [candidates] if candidates else None,
-            top_n, n_docs, return_context
-        )
-        print(time.time() - t0)
-        t0 = time.time()
-        predictions = self.process_batch(
             [query], [candidates] if candidates else None,
             top_n, n_docs, return_context
         )
-        print(time.time() - t0)
         return predictions[0]
 
     def process_batch(self, queries, candidates=None, top_n=1, n_docs=5,
