@@ -5,6 +5,7 @@ import logging
 import numpy as np
 import scipy.sparse as sp
 import time
+import uuid
 
 from multiprocessing.pool import ThreadPool
 from functools import partial
@@ -44,21 +45,21 @@ class LuceneRanker(object):
         docs = []
         for i, hit in enumerate(hits.scoreDocs):
             doc = self.searcher.doc(hit.doc)
-            docs.append(unicode(doc['text']).lower())
-            docids.append(unicode(i))
+            docs.append(unicode(doc['text']))
+            docids.append(unicode(doc['title']))
         return docids, docs
 
     def batch_closest_docs(self, queries, k=1, num_workers=None):
         """Process a batch of closest_docs requests multithreaded."""
         # get highest scoring document for multiple queries
         batch = []
-        t0 = time.time()
         for i, q in enumerate(queries):
             if i % 100 == 0:
                 print(i)
+
+            t0 = time.time()
             docids, docs = self.closest_docs(q, k)
             batch.append((docids, docs))
-        print(time.time() - t0)
         return batch
 
     def parse(self, query): return None

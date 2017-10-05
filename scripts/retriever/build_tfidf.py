@@ -12,6 +12,7 @@ import argparse
 import os
 import math
 import logging
+import time
 
 from multiprocessing import Pool as ProcessPool
 from multiprocessing.util import Finalize
@@ -20,6 +21,8 @@ from collections import Counter
 
 from drqa import retriever
 from drqa import tokenizers
+
+from sklearn.feature_extraction.text import HashingVectorizer, TfidfTransformer
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -97,11 +100,7 @@ def get_count_matrix(args, db, db_opts):
 
     # Setup worker pool
     tok_class = tokenizers.get_class(args.tokenizer)
-    workers = ProcessPool(
-        args.num_workers,
-        initializer=init,
-        initargs=(tok_class, db_class, db_opts)
-    )
+    init(tok_class, db_class, db_opts)
 
     # Compute the count matrix in steps (to keep in memory)
     logger.info('Mapping...')
@@ -111,18 +110,52 @@ def get_count_matrix(args, db, db_opts):
     _count = partial(count, args.ngram, args.hash_size)
     for i, batch in enumerate(batches):
         logger.info('-' * 25 + 'Batch %d/%d' % (i + 1, len(batches)) + '-' * 25)
-        for b_row, b_col, b_data in workers.imap_unordered(_count, batch):
+        for b_row, b_col, b_data in map(_count, batch):
             row.extend(b_row)
             col.extend(b_col)
             data.extend(b_data)
-    workers.close()
-    workers.join()
 
     logger.info('Creating sparse matrix...')
     count_matrix = sp.csr_matrix(
         (data, (row, col)), shape=(args.hash_size, len(doc_ids))
     )
     count_matrix.sum_duplicates()
+    return count_matrix, (DOC2IDX, doc_ids)
+
+def get_count_matrix_sklearn(args, db, db_opts):
+    """Form a sparse word to document count matrix (inverted index).
+
+    M[i, j] = # times word i appears in document j.
+    """
+    # Map doc_ids to indexes
+    global DOC2IDX
+    db_class = retriever.get_class(db)
+    with db_class(**db_opts) as doc_db:
+        doc_ids = doc_db.get_doc_ids()
+    DOC2IDX = {doc_id: i for i, doc_id in enumerate(doc_ids)}
+
+    hashvec = HashingVectorizer(n_features=2**24, dtype=np.int8, ngram_range=(1,2), norm=None, non_negative=True)
+    chunk_size = 100000
+
+    texts = []
+    chunks = []
+    db = db_class(**db_opts)
+    for i, doc_id in enumerate(doc_ids):
+        #if i == 100000: break
+        texts.append(db.get_doc_text(doc_id))
+        if i % chunk_size == 0:
+            if i > 0:
+                print(i, 'fitting hashvec...')
+                chunks.append(hashvec.transform(texts))
+                del texts[:]
+    chunks.append(hashvec.transform(texts))
+
+    count_matrix = sp.vstack(chunks)
+    count_matrix = count_matrix.transpose()
+
+    print(count_matrix.shape)
+    print(count_matrix.dtype)
+
     return count_matrix, (DOC2IDX, doc_ids)
 
 
@@ -178,13 +211,20 @@ if __name__ == '__main__':
                         help='Number of CPU processes (for tokenizing, etc)')
     args = parser.parse_args()
 
-    logging.info('Counting words...')
-    count_matrix, doc_dict = get_count_matrix(
+    #logging.info('Counting words...')
+    #count_matrix, doc_dict = get_count_matrix(
+    #    args, 'sqlite', {'db_path': args.db_path}
+    #)
+    #logger.info('Making tfidf vectors...')
+    #tfidf = get_tfidf_matrix(count_matrix)
+
+    count_matrix, doc_dict = get_count_matrix_sklearn(
         args, 'sqlite', {'db_path': args.db_path}
     )
 
-    logger.info('Making tfidf vectors...')
-    tfidf = get_tfidf_matrix(count_matrix)
+    tfidf_transformer = TfidfTransformer()
+    tfidf = sp.csr_matrix(tfidf_transformer.fit_transform(count_matrix), dtype=np.float32)
+    print(tfidf.dtype)
 
     logger.info('Getting word-doc frequencies...')
     freqs = get_doc_freqs(count_matrix)
@@ -192,7 +232,7 @@ if __name__ == '__main__':
     basename = os.path.splitext(os.path.basename(args.db_path))[0]
     basename += ('-tfidf-ngram=%d-hash=%d-tokenizer=%s' %
                  (args.ngram, args.hash_size, args.tokenizer))
-    filename = os.path.join(args.out_dir, basename)
+    filename = os.path.join(args.out_dir)
 
     logger.info('Saving to %s.npz' % filename)
     metadata = {

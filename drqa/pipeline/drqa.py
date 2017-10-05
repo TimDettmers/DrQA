@@ -15,18 +15,21 @@ import heapq
 import math
 import time
 import logging
+import numpy as np
+import copy
+import time
 
 from multiprocessing import Pool as ProcessPool
 from multiprocessing.util import Finalize
 
 from ..reader.vector import batchify
 from ..reader.data import ReaderDataset, SortedBatchSampler
+from ..retriever import TfidfDocRanker
 from .. import reader
 from .. import tokenizers
 from . import DEFAULTS
 
 logger = logging.getLogger(__name__)
-
 
 # ------------------------------------------------------------------------------
 # Multiprocessing functions to fetch and tokenize text
@@ -197,6 +200,7 @@ class DrQA(object):
         logger.info('Retrieving top %d docs...' % n_docs)
 
         # Rank documents for queries.
+        t0 = time.time()
         if len(queries) == 1:
             ranked = [self.ranker.closest_docs(queries[0], k=n_docs)]
         else:
@@ -204,13 +208,24 @@ class DrQA(object):
                 queries, k=n_docs, num_workers=self.num_workers
             )
         all_docids, all_doc_scores = zip(*ranked)
+        print('Ranking: {0} '.format(time.time() - t0))
+
+        #for i, top_k in enumerate(all_docids):
+        #    print(top_k[0], queries[i])
 
         # Flatten document ids and retrieve text from database.
         # We remove duplicates for processing efficiency.
+        t0 = time.time()
         flat_docids = list({d for docids in all_docids for d in docids})
-        did2didx = {did: didx for didx, did in enumerate(flat_docids)}
-        #doc_texts = self.processes.map(fetch_text, flat_docids)
-        doc_texts = list({d for docids in all_doc_scores for d in docids})
+        doc_id2doc_index = {did: didx for didx, did in enumerate(flat_docids)}
+        if isinstance(self.ranker, TfidfDocRanker):
+            doc_texts = self.processes.map(fetch_text, flat_docids)
+        else:
+            doc_texts = list({d for docids in all_doc_scores for d in docids})
+
+
+        lengths = map(len, doc_texts)
+        #print(np.mean(lengths), np.median(lengths))
 
         # Split and flatten documents. Maintain a mapping from doc (index in
         # flat list) to split (index in flat list).
@@ -224,23 +239,32 @@ class DrQA(object):
                 #flat_splits.append(split)
                 flat_splits.append(unicode(split))
             didx2sidx[-1][1] = len(flat_splits)
+        print('Flattening and indexing: {0} '.format(time.time() - t0))
 
-        print('tokenization...')
+        #print('tokenization...')
         # Push through the tokenizers as fast as possible.
         #for q in queries: q_tokens.append(tokenize_text(q))
         #for s in flat_splits: q_tokens.append(tokenize_text(s))
+        t0 = time.time()
         q_tokens = self.processes.map_async(tokenize_text, queries)
         s_tokens = self.processes.map_async(tokenize_text, flat_splits)
         q_tokens = q_tokens.get()
         s_tokens = s_tokens.get()
-        print('tokenization end...')
+        print('Tokenization: {0} '.format(time.time() - t0))
+        #print('tokenization end...')
+        print(len(flat_docids))
+        print(len(doc_texts))
 
         # Group into structured example inputs. Examples' ids represent
         # mappings to their question, document, and split ids.
         examples = []
+        t0 = time.time()
         for qidx in range(len(queries)):
             for rel_didx, did in enumerate(all_docids[qidx]):
-                start, end = didx2sidx[did2didx[did]]
+                #print(rel_didx, did)
+                #print(doc_id2doc_index[did])
+                #print(len(didx2sidx))
+                start, end = didx2sidx[doc_id2doc_index[did]]
                 for sidx in range(start, end):
                     if (len(q_tokens[qidx].words()) > 0 and
                             len(s_tokens[sidx].words()) > 0):
@@ -255,9 +279,11 @@ class DrQA(object):
                         })
 
         logger.info('Reading %d paragraphs...' % len(examples))
+        print('Wrangling: {0} '.format(time.time() - t0))
 
         # Push all examples through the document reader.
         # We decode argmax start/end indices asychronously on CPU.
+        t0 = time.time()
         result_handles = []
         num_loaders = min(self.max_loaders, math.floor(len(examples) / 1e3))
         for batch in self._get_loader(examples, num_loaders):
@@ -274,9 +300,23 @@ class DrQA(object):
             else:
                 handle = self.reader.predict(batch, async_pool=None)#self.processes)
             result_handles.append((handle, batch[-1], batch[0].size(0)))
+        print('Q&A: {0} '.format(time.time() - t0))
 
+        #for result, ex_ids, batch_size in result_handles:
+        #    s, e, score = result#.get()
+        #    for i in range(batch_size):
+        #        if len(score[i]) > 0:
+        #            qidx, rel_didx, sidx = ex_ids[i]
+        #            paragraph = copy.deepcopy(s_tokens[sidx])
+        #            text = paragraph.untokenize()
+        #            answer = paragraph.slice(s[i][0], e[i][0]+1).untokenize()
+        #            print('='*50)
+        #            print(text)
+        #            print('q: {2}: answer: {3} doc_id: {0}, score: {1}'.format(all_docids[qidx][rel_didx], score[i], queries[i], answer))
+        #            print('='*50)
         # Iterate through the predictions, and maintain priority queues for
         # top scored answers for each question in the batch.
+        t0 = time.time()
         queues = [[] for _ in range(len(queries))]
         for result, ex_ids, batch_size in result_handles:
             s, e, score = result#.get()
@@ -289,8 +329,10 @@ class DrQA(object):
                         heapq.heappush(queue, item)
                     else:
                         heapq.heappushpop(queue, item)
+        print('Sorting: {0} '.format(time.time() - t0))
 
         # Arrange final top prediction data.
+        t0 = time.time()
         all_predictions = []
         for queue in queues:
             predictions = []
@@ -310,6 +352,7 @@ class DrQA(object):
                     }
                 predictions.append(prediction)
             all_predictions.append(predictions[-1::-1])
+        print('Formating: {0} '.format(time.time() - t0))
 
         logger.info('Processed %d queries in %.4f (s)' %
                     (len(queries), time.time() - t0))

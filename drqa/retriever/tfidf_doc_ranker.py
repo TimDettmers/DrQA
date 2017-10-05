@@ -36,6 +36,17 @@ class TfidfDocRanker(object):
         tfidf_path = tfidf_path or DEFAULTS['tfidf_path']
         logger.info('Loading %s' % tfidf_path)
         matrix, metadata = utils.load_sparse_csr(tfidf_path)
+        print(matrix.count_nonzero())
+        #matrix = matrix.transpose()
+        #print(matrix.shape)
+        #non_zeros = []
+        #for i in range(matrix.shape[0]):
+        #    if i < 10:
+        #        print(i)
+        #    else:
+        #        if i % 1000 == 0:
+        #            print(i, np.mean(non_zeros), np.median(non_zeros))
+        #    non_zeros.append((matrix[i] != 0.0).sum())
         self.doc_mat = matrix
         self.ngrams = metadata['ngram']
         self.hash_size = metadata['hash_size']
